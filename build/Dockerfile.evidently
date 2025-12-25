@@ -1,0 +1,28 @@
+FROM python:3.11-slim
+
+# 配置 pip 使用华为云镜像源
+RUN pip config set global.index-url https://repo.huaweicloud.com/repository/pypi/simple \
+    && pip config set global.trusted-host repo.huaweicloud.com
+
+# [修复] 安装系统级依赖
+# libgomp1: Scikit-learn/Pandas 等计算库通常需要 OpenMP 支持，否则会报错 "OSError: libgomp.so.1: cannot open shared object file"
+RUN apt-get update && apt-get install -y \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG EVIDENTLY_VERSION
+
+# 检查是否传入了版本号，如果没有则报错 (可选的安全检查)
+RUN if [ -z "$EVIDENTLY_VERSION" ]; then echo "Build argument EVIDENTLY_VERSION is required" && exit 1; fi
+
+# 安装 Evidently
+RUN pip install --no-cache-dir \
+    evidently==${EVIDENTLY_VERSION} \
+    scikit-learn \
+    pandas
+
+# 设置工作目录
+WORKDIR /workspace
+
+# 设置 Entrypoint
+ENTRYPOINT ["evidently"]

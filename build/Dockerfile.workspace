@@ -1,0 +1,135 @@
+# 使用支持 CUDA 12.6 和 Ubuntu 24.04 的 Devel 镜像
+FROM nvidia/cuda:12.6.3-devel-ubuntu24.04
+
+# 设置环境变量
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# [Ubuntu 源] 替换 Ubuntu 24.04 软件源为华为云镜像
+RUN sed -i 's@//archive.ubuntu.com/ubuntu/@//repo.huaweicloud.com/ubuntu/@g' /etc/apt/sources.list.d/ubuntu.sources \
+    && sed -i 's@//security.ubuntu.com/ubuntu/@//repo.huaweicloud.com/ubuntu/@g' /etc/apt/sources.list.d/ubuntu.sources
+
+# 1. [Root] 安装基础系统依赖
+# 包含 Python 开发包和常用工具
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-venv \
+    python3-dev \
+    curl \
+    git \
+    build-essential \
+    vim \
+    wget \
+    unzip \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 1.1 [Root] 安装 Node.js 22
+# Code-Server 和前端开发需要 Node 22+
+# - 安装 Node.js
+# - 设置 npm 全局使用华为云镜像（供后续开发使用，不用于安装 code-server）
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y nodejs && \
+    npm config set registry https://repo.huaweicloud.com/repository/npm/ && \
+    rm -rf /var/lib/apt/lists/*
+
+# 2. [Root] 配置系统 Pip 源并安装 uv
+# - 创建全局 pip 配置文件使用华为云源
+# - 使用 pip 安装 uv (Ubuntu 24.04 需加 --break-system-packages)
+RUN mkdir -p /etc/pip && \
+    echo "[global]" > /etc/pip/pip.conf && \
+    echo "index-url = https://repo.huaweicloud.com/repository/pypi/simple" >> /etc/pip/pip.conf && \
+    echo "trusted-host = repo.huaweicloud.com" >> /etc/pip/pip.conf && \
+    pip3 install uv --break-system-packages
+
+# 3. [Root] 安装 Code Server
+# [修复] 放弃 npm 源码编译安装（因镜像源包损坏且缺编译依赖）
+# 改用官方脚本安装预编译包，稳定且速度快
+RUN curl -fsSL https://code-server.dev/install.sh | sh
+
+# 4. [Root] 创建工作用户
+RUN useradd -ms /bin/bash jovyan
+
+# 预创建工作目录并修正权限 (作为 Root 执行)
+# 确保 jovyan 用户对工作目录拥有完全所有权，防止挂载卷时的权限问题
+RUN mkdir -p /home/jovyan/work && \
+    chown -R jovyan:jovyan /home/jovyan
+
+# 5. [User] 切换到普通用户
+USER jovyan
+WORKDIR /home/jovyan
+ENV HOME="/home/jovyan"
+
+# [环境变量] 设置 uv 使用华为云 PyPI 镜像
+ENV UV_INDEX_URL=https://repo.huaweicloud.com/repository/pypi/simple
+
+# [PATH 设置]
+ENV PATH="/home/jovyan/.venv/bin:$PATH"
+
+# 6. [User] 创建 Python 虚拟环境
+# 使用系统自带的 Python (/usr/bin/python3 -> 3.12)
+RUN uv venv .venv --python /usr/bin/python3
+
+
+# 7. [User] 安装 MLOps 基础工具链 (第一阶段)
+# 定义构建参数 (由 docker-compose 传入)
+ARG MLFLOW_VERSION
+ARG PREFECT_VERSION
+ARG EVIDENTLY_VERSION
+
+# 检查必要参数 (可选)
+RUN if [ -z "$MLFLOW_VERSION" ] || [ -z "$PREFECT_VERSION" ] || [ -z "$EVIDENTLY_VERSION" ]; then \
+    echo "Error: MLFLOW_VERSION, PREFECT_VERSION, and EVIDENTLY_VERSION build args are required." && exit 1; \
+    fi
+
+# 将安装过程拆分，优先安装基础设施，提高构建成功率和缓存利用率
+
+RUN uv pip install --no-cache-dir \
+    "setuptools<81" \
+    "pydantic<2.12" \
+    "pyparsing<3.0.0" \
+    jupyterlab \
+    jupyter-server-proxy \
+    dvc[s3] \
+    feast[redis,postgres] \
+    "mlflow==${MLFLOW_VERSION}" \
+    "prefect==${PREFECT_VERSION}" \
+    "click>=8.1.0,<8.2.0" \
+    boto3 \
+    psycopg2-binary \
+    # 基础分析库
+    pandas \
+    matplotlib \
+    seaborn \
+    pytest \
+    pytest-cov
+
+# 8. [User] 安装机器学习与深度分析库 (第二阶段)
+# 注意：移除了 dataprep (在 Python 3.12 下存在严重的依赖冲突)
+# AutoGluon 安装可能耗时较长
+# [修改] 使用 ARG 传入的版本号
+RUN uv pip install --no-cache-dir \
+    autogluon[all] \
+    shap \
+    "evidently==${EVIDENTLY_VERSION}" \
+    bentoml \
+    sweetviz \
+    ydata-profiling \
+    papermill
+
+# 暴露端口说明:
+# 8888: JupyterLab
+# 8081: VSCode (Code Server)
+# 3000: BentoML Model Serving
+EXPOSE 8888 8081 3000
+
+# 切换回 Root 用户以在启动时修复挂载卷权限
+USER root
+
+# 启动脚本
+# 1. 确保目录存在 (mkdir -p)
+# 2. 修复权限 (chown): 涵盖 work, .config(VSCode配置), .local(VSCode插件/Jupyter数据), .jupyter(Jupyter配置)
+# 3. 启动服务 (runuser): 以 jovyan 用户身份启动
+CMD ["/bin/bash", "-c", "mkdir -p /home/jovyan/work /home/jovyan/.config /home/jovyan/.local /home/jovyan/.jupyter && chown -R jovyan:jovyan /home/jovyan/work /home/jovyan/.config /home/jovyan/.local /home/jovyan/.jupyter && runuser -u jovyan -- bash -c 'export PATH=/home/jovyan/.venv/bin:$PATH && code-server --bind-addr 0.0.0.0:8081 --auth password & jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --NotebookApp.token=${JUPYTER_TOKEN} --allow-root'"]

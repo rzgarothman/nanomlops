@@ -1,0 +1,33 @@
+FROM python:3.11-slim
+
+# 配置 pip 使用华为云镜像源
+RUN pip config set global.index-url https://repo.huaweicloud.com/repository/pypi/simple \
+    && pip config set global.trusted-host repo.huaweicloud.com
+
+# 安装编译依赖 (psycopg2 需要 gcc 和 libpq-dev)
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 定义版本参数
+ARG MLFLOW_VERSION
+
+# 检查是否传入了版本号，如果没有则报错 (可选的安全检查)
+RUN if [ -z "$MLFLOW_VERSION" ]; then echo "Build argument MLFLOW_VERSION is required" && exit 1; fi
+
+
+# 安装 MLflow 及必要插件
+# psycopg2-binary: Postgres 驱动
+# boto3: S3/MinIO 驱动
+# prometheus-flask-exporter: 用于支持 --expose-prometheus /metrics 参数
+RUN pip install --no-cache-dir \
+    mlflow==${MLFLOW_VERSION} \
+    psycopg2-binary \
+    boto3 \
+    prometheus-flask-exporter \
+    uvicorn
+
+# 设置入口点
+ENTRYPOINT ["mlflow"]

@@ -1,0 +1,334 @@
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ==========================================
+  # 基础存储层 (Postgres, Redis, MinIO)
+  # ==========================================
+  db:
+    image: postgres:${POSTGRES_TAG}
+    container_name: mlops-postgres
+    restart: ${RESTART_POLICY}
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_MULTIPLE_DATABASES: gitea,mlflow,prefect,label_studio
+    volumes:
+      - ${DATA_ROOT}/postgres:/var/lib/postgresql/data
+      - ./scripts/init_db.sh:/docker-entrypoint-initdb.d/init_db.sh
+    networks:
+      - mlops-net
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter
+    container_name: mlops-postgres-exporter
+    restart: ${RESTART_POLICY}
+    environment:
+      DATA_SOURCE_URI: "db:5432/postgres?sslmode=disable"
+      DATA_SOURCE_USER: ${POSTGRES_USER}
+      DATA_SOURCE_PASS: ${POSTGRES_PASSWORD}
+    networks:
+      - mlops-net
+    depends_on:
+      - db
+
+  redis:
+    image: redis:${REDIS_TAG}
+    container_name: mlops-redis
+    restart: ${RESTART_POLICY}
+    volumes:
+      - ${DATA_ROOT}/redis:/data
+    networks:
+      - mlops-net
+
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: mlops-redis-exporter
+    restart: ${RESTART_POLICY}
+    environment:
+      - REDIS_ADDR=redis:6379
+    networks:
+      - mlops-net
+    depends_on:
+      - redis
+
+  minio:
+    image: minio/minio:${MINIO_TAG}
+    container_name: mlops-minio
+    restart: ${RESTART_POLICY}
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      # 开启 MinIO Prometheus 指标无需鉴权 (方便内网抓取)
+      MINIO_PROMETHEUS_AUTH_TYPE: "public"
+    volumes:
+      - ${DATA_ROOT}/minio:/data
+    ports:
+      - "${PORT_MINIO_API}:9000"
+      - "${PORT_MINIO_CONSOLE}:9001"
+    networks:
+      - mlops-net
+
+  # ==========================================
+  # 开发与版本管理 (Gitea, Actions)
+  # ==========================================
+  gitea:
+    image: gitea/gitea:${GITEA_TAG}
+    container_name: mlops-gitea
+    restart: ${RESTART_POLICY}
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - GITEA__database__DB_TYPE=postgres
+      - GITEA__database__HOST=db:5432
+      - GITEA__database__NAME=gitea
+      - GITEA__database__USER=${POSTGRES_USER}
+      - GITEA__database__PASSWD=${POSTGRES_PASSWORD}
+      - GITEA__server__ROOT_URL=http://localhost:${PORT_GITEA_HTTP}/
+      # 开启 Gitea 内置监控指标 /metrics
+      - GITEA__metrics__ENABLED=true
+      - GITEA__metrics__ENABLED_ISSUE_BY_LABEL=true
+      - GITEA__metrics__ENABLED_ISSUE_BY_REPOSITORY=true
+    volumes:
+      - ${DATA_ROOT}/gitea:/data
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - "${PORT_GITEA_HTTP}:3000"
+      - "${PORT_GITEA_SSH}:22"
+    networks:
+      - mlops-net
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # ==========================================
+  # 实验管理与模型注册 (MLflow)
+  # ==========================================
+  mlflow:
+    build:
+      context: ./build
+      dockerfile: Dockerfile.mlflow
+      args:
+        MLFLOW_VERSION: ${MLFLOW_TAG}
+    container_name: mlops-mlflow
+    restart: ${RESTART_POLICY}
+    command: >
+      server --backend-store-uri postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/mlflow --default-artifact-root s3://mlflow/ --artifacts-destination s3://mlflow/ --host 0.0.0.0 --port 5000 --expose-prometheus /metrics --allowed-hosts "*" --cors-allowed-origins "*"
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "${PORT_MLFLOW}:5000"
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    networks:
+      - mlops-net
+
+  # ==========================================
+  # 管道编排 (Prefect)
+  # ==========================================
+  prefect-server:
+    image: prefecthq/prefect:${PREFECT_TAG}
+    container_name: mlops-prefect
+    restart: ${RESTART_POLICY}
+    command: prefect server start --host 0.0.0.0
+    environment:
+      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/prefect
+      # 指向本地端口 API
+      PREFECT_UI_API_URL: http://localhost:${PORT_PREFECT}/api
+    ports:
+      - "${PORT_PREFECT}:4200"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - mlops-net
+
+  # ==========================================
+  # 数据标注 (Label Studio)
+  # ==========================================
+  label-studio:
+    image: heartexlabs/label-studio:${LABEL_STUDIO_TAG}
+    container_name: mlops-label-studio
+    restart: ${RESTART_POLICY}
+    user: root
+    command: label-studio start
+    environment:
+      DJANGO_DB: default
+      POSTGRE_NAME: label_studio
+      POSTGRE_USER: ${POSTGRES_USER}
+      POSTGRE_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRE_PORT: 5432
+      POSTGRE_HOST: db
+    volumes:
+      - ${DATA_ROOT}/label-studio:/label-studio/data
+    ports:
+      - "${PORT_LABEL_STUDIO}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - mlops-net
+
+  # ==========================================
+  # 模型监控 (Evidently AI)
+  # ==========================================
+  evidently:
+    build:
+      context: ./build
+      dockerfile: Dockerfile.evidently
+      args:
+        EVIDENTLY_VERSION: ${EVIDENTLY_TAG}
+    container_name: mlops-evidently
+    restart: ${RESTART_POLICY}
+    user: root
+    command: ui --host 0.0.0.0 --port 8000 --workspace /workspace --demo-projects all
+    volumes:
+      - ${DATA_ROOT}/evidently:/workspace
+    ports:
+      - "${PORT_EVIDENTLY}:8000"
+    networks:
+      - mlops-net
+
+  # ==========================================
+  # 开发工作区 (Jupyter, VSCode, EDA, AutoML)
+  # ==========================================
+  workspace:
+    build:
+      context: ./build
+      dockerfile: Dockerfile.workspace
+      args:
+        MLFLOW_VERSION: ${MLFLOW_PIP_VERSION}
+        PREFECT_VERSION: ${PREFECT_PIP_VERSION}
+        EVIDENTLY_VERSION: ${EVIDENTLY_PIP_VERSION}
+    container_name: mlops-workspace
+    restart: ${RESTART_POLICY}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
+    environment:
+      - PASSWORD=${PASSWORD}
+      - JUPYTER_TOKEN=${JUPYTER_TOKEN}
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - PREFECT_API_URL=http://prefect-server:4200/api
+      - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+    volumes:
+      - ${DATA_ROOT}/workspace:/home/jovyan/work
+      - ${DATA_ROOT}/dvc_cache:/home/jovyan/.cache/dvc
+      - ${DATA_ROOT}/vscode/config:/home/jovyan/.config/code-server
+      - ${DATA_ROOT}/vscode/extensions:/home/jovyan/.local/share/code-server
+      - ${DATA_ROOT}/jupyter/config:/home/jovyan/.jupyter
+      - ${DATA_ROOT}/jupyter/local:/home/jovyan/.local/share/jupyter
+    ports:
+      - "${PORT_JUPYTER}:8888" # JupyterLab
+      - "${PORT_VSCODE}:8081" # Code Server
+      - "${PORT_BENTO_SERVING}:3000" # BentoML Serving
+    networks:
+      - mlops-net
+    working_dir: /home/jovyan/work
+    # ==========================================
+    # 可观测性 (Prometheus & Grafana)
+    # ==========================================
+    # 主机硬件监控
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: mlops-node-exporter
+    restart: ${RESTART_POLICY}
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    networks:
+      - mlops-net
+
+  # 容器资源监控 (cAdvisor)
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: mlops-cadvisor
+    restart: ${RESTART_POLICY}
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks:
+      - mlops-net
+
+  prometheus:
+    image: prom/prometheus:${PROMETHEUS_TAG}
+    container_name: mlops-prometheus
+    restart: ${RESTART_POLICY}
+    user: root
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ${DATA_ROOT}/prometheus:/prometheus
+    ports:
+      - "${PORT_PROMETHEUS}:9090"
+    networks:
+      - mlops-net
+
+  grafana:
+    image: grafana/grafana:${GRAFANA_TAG}
+    container_name: mlops-grafana
+    restart: ${RESTART_POLICY}
+    user: root
+    volumes:
+      - ${DATA_ROOT}/grafana:/var/lib/grafana
+    ports:
+      - "${PORT_GRAFANA}:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - mlops-net
+
+  # ==========================================
+  # 简易导航网关 (Nginx Only)
+  # ==========================================
+  nginx:
+    image: nginx:${NGINX_TAG}
+    container_name: mlops-gateway
+    restart: ${RESTART_POLICY}
+    volumes:
+      - ./config/nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./config/nginx/index.html:/usr/share/nginx/html/index.html
+    ports:
+      - "${PORT_NGINX}:80"
+    networks:
+      - mlops-net
+    # 移除所有依赖，仅提供静态页面
+    healthcheck:
+      test: [ "CMD", "wget", "-q", "--spider", "http://127.0.0.1/health" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+networks:
+  mlops-net:
+    driver: bridge
