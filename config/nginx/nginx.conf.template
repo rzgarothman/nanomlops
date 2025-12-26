@@ -1,0 +1,19 @@
+server {
+    listen 80;
+    server_name localhost;
+
+    # 1. 静态导航页
+    location / {
+        root   /usr/share/nginx/html;
+        index  index.html index.htm;
+    }
+
+    # 2. 健康检查 (修改为正则匹配，同时支持 /health 和 /health/)
+    location ~ ^/health/?$ {
+        access_log off;
+        return 200 'OK';
+    }
+    
+    # 注意：在此模式下，不配置 /jupyter/, /gitea/ 等反向代理
+    # 所有服务通过 index.html 中的端口跳转直接访问
+}

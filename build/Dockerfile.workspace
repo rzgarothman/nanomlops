@@ -1,9 +1,22 @@
-# 使用支持 CUDA 12.6 和 Ubuntu 24.04 的 Devel 镜像
-FROM nvidia/cuda:12.6.3-devel-ubuntu24.04
+# 定义基础镜像参数，默认为 NVIDIA CUDA
+ARG BASE_IMAGE=nvidia/cuda:12.6.3-devel-ubuntu24.04
+
+# 使用动态基础镜像
+FROM ${BASE_IMAGE}
 
 # 设置环境变量
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# 定义构建参数 (由 docker-compose 传入)
+ARG MLFLOW_VERSION
+ARG PREFECT_VERSION
+ARG EVIDENTLY_VERSION
+
+# 检查必要参数 (可选)
+RUN if [ -z "$MLFLOW_VERSION" ] || [ -z "$PREFECT_VERSION" ] || [ -z "$EVIDENTLY_VERSION" ]; then \
+    echo "Error: MLFLOW_VERSION, PREFECT_VERSION, and EVIDENTLY_VERSION build args are required." && exit 1; \
+    fi
 
 # [Ubuntu 源] 替换 Ubuntu 24.04 软件源为华为云镜像
 RUN sed -i 's@//archive.ubuntu.com/ubuntu/@//repo.huaweicloud.com/ubuntu/@g' /etc/apt/sources.list.d/ubuntu.sources \
@@ -45,7 +58,7 @@ RUN mkdir -p /etc/pip && \
     pip3 install uv --break-system-packages
 
 # 3. [Root] 安装 Code Server
-# [修复] 放弃 npm 源码编译安装（因镜像源包损坏且缺编译依赖）
+# 放弃 npm 源码编译安装（因镜像源包损坏且缺编译依赖）
 # 改用官方脚本安装预编译包，稳定且速度快
 RUN curl -fsSL https://code-server.dev/install.sh | sh
 
@@ -72,20 +85,8 @@ ENV PATH="/home/jovyan/.venv/bin:$PATH"
 # 使用系统自带的 Python (/usr/bin/python3 -> 3.12)
 RUN uv venv .venv --python /usr/bin/python3
 
-
 # 7. [User] 安装 MLOps 基础工具链 (第一阶段)
-# 定义构建参数 (由 docker-compose 传入)
-ARG MLFLOW_VERSION
-ARG PREFECT_VERSION
-ARG EVIDENTLY_VERSION
-
-# 检查必要参数 (可选)
-RUN if [ -z "$MLFLOW_VERSION" ] || [ -z "$PREFECT_VERSION" ] || [ -z "$EVIDENTLY_VERSION" ]; then \
-    echo "Error: MLFLOW_VERSION, PREFECT_VERSION, and EVIDENTLY_VERSION build args are required." && exit 1; \
-    fi
-
 # 将安装过程拆分，优先安装基础设施，提高构建成功率和缓存利用率
-
 RUN uv pip install --no-cache-dir \
     "setuptools<81" \
     "pydantic<2.12" \
@@ -109,7 +110,6 @@ RUN uv pip install --no-cache-dir \
 # 8. [User] 安装机器学习与深度分析库 (第二阶段)
 # 注意：移除了 dataprep (在 Python 3.12 下存在严重的依赖冲突)
 # AutoGluon 安装可能耗时较长
-# [修改] 使用 ARG 传入的版本号
 RUN uv pip install --no-cache-dir \
     autogluon[all] \
     shap \
@@ -117,13 +117,15 @@ RUN uv pip install --no-cache-dir \
     bentoml \
     sweetviz \
     ydata-profiling \
-    papermill
+    papermill \
+    streamlit  
 
 # 暴露端口说明:
 # 8888: JupyterLab
 # 8081: VSCode (Code Server)
 # 3000: BentoML Model Serving
-EXPOSE 8888 8081 3000
+# 8501: Streamlit App
+EXPOSE 8888 8081 3000 8501
 
 # 切换回 Root 用户以在启动时修复挂载卷权限
 USER root

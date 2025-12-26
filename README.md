@@ -1,6 +1,6 @@
 # 轻量化 MLOps 基础设施实施指南
 
-本文档指导如何在单台高性能服务器（建议 Linux, Ubuntu 24.04+）上部署基于 Docker 的全栈 MLOps 平台。
+本文档指导如何在单台高性能服务器（建议 Linux, Ubuntu 24.04+）上部署基于 Docker 的全栈 MLOps 平台。本架构采用 **计算与存储分离** 模式，支持多租户独立工作区。
 
 ## 1\. 环境准备 (Environment Setup)
 
@@ -71,334 +71,237 @@ sudo docker run --rm --runtime=nvidia --gpus all ubuntu nvidia-smi
 
 将生成的文件按照以下结构组织：
 
-```markdown
+```bash
 mlops-platform/
-├── .env                    # 环境变量配置
-├── docker-compose.yml      # 主编排文件
+├── .env                        # 基础设施全局配置
+├── .env.user1                  # [新增] 用户1 工作区配置
+├── docker-compose.yml          # [核心] 基础设施编排 (Infra)
+├── docker-compose.workspace.gpu.yml # [新增] GPU 工作区编排
+├── docker-compose.workspace.cpu.yml # [新增] CPU 工作区编排
 ├── build/
-│   ├── Dockerfile.workspace # Workspace 镜像定义
-│   ├── Dockerfile.mlflow    # MLflow 自定义镜像构建 (含 PG/S3 驱动)
-│   └── Dockerfile.evidently # Evidently 自定义镜像构建
+│   ├── Dockerfile.workspace    # Workspace 镜像定义 (动态基础镜像)
+│   ├── Dockerfile.mlflow       # MLflow 自定义镜像
+│   └── Dockerfile.evidently    # Evidently 自定义镜像
 ├── config/
 │   ├── nginx/
-│   │   ├── nginx.conf      # 网关配置
-│   │   └── index.html      # 导航仪表盘页面
+│   │   ├── nginx.conf          # 网关配置
+│   │   └── index.html          # 导航仪表盘
 │   └── prometheus/
-│       └── prometheus.yml  # 监控配置
+│       └── prometheus.yml      # 监控配置
 └── scripts/
-    └── init_db.sh          # 数据库初始化脚本
+    └── init_db.sh              # 数据库初始化脚本
 ```
 
 **执行权限设置：**
 
 ```bash
 chmod +x scripts/init_db.sh
-mkdir -p data/{postgres,minio,gitea,mlflow,redis,label-studio,prometheus,grafana,workspace,dvc_cache,evidently}
+mkdir -p data/{postgres,minio,gitea,mlflow,redis,label-studio,prometheus,grafana,evidently}
+# 为用户数据预创建目录 (以 user1 为例)
+mkdir -p data/workspace-user1/{work,dvc_cache,vscode,jupyter}
 # 确保数据目录权限（防止容器内无权限写入）
 sudo chown -R 1000:1000 data
 ```
 
 ## 3\. 部署流程
 
-### 步骤 1: 检查配置
+### 步骤 1: 初始化网络
 
-打开 `.env` 文件，根据实际情况修改：
-
-- `ENABLE_GPU`: 如果没有 GPU，设置为 `false` （注意：需要在 docker-compose.yml 中注释掉 workspace 的 deploy 部分）。
-- 修改 `POSTGRES_PASSWORD`, `MINIO_ROOT_PASSWORD` 等敏感信息。
-
-### 步骤 2: 构建并启动
-
-首次启动需要构建 Workspace 镜像（耗时较长，因为包含 CUDA 和大量 Python 库）。
-
-**注意** ：在安装 `docker-compose-plugin` 后，请使用 `docker compose` （中间有空格）而不是 `docker-compose` 。
+创建一个共享网络，使基础设施和动态拉起的工作区能够互通。
 
 ```bash
-docker compose up -d --build
+docker network create mlops-shared-net
 ```
 
-### 步骤 3: 服务初始化与验证
+### 步骤 2: 启动基础设施 (Infra)
+
+1. **检查配置**: 修改 `.env` 中的密码和版本号。
+2. **启动服务**:
+	```bash
+	docker compose -f docker-compose.yml up -d --build
+	```
+	此命令将启动 Postgres, MinIO, Gitea, MLflow, Prefect, Nginx, Prometheus, Grafana 等所有后台服务。
+
+### 步骤 3: 基础设施初始化
 
 启动后，按顺序执行以下初始化操作：
 
 #### A. MinIO (对象存储)
 
-1. 访问 `http://localhost:9001` (或点击导航页卡片)。
+1. 访问 `http://localhost:9001` 。
 2. 登录 (默认: `minioadmin` / `minioadmin`)。
-3. 创建以下 Buckets:
-	- `mlflow` (用于存放模型制品)
-	- `dvc` (用于存放数据集)
-	- `prefect` (用于存放流程日志或结果)
-4. 创建 Access Keys（如果未使用根用户），并在 `.env` 和 `docker-compose.yml` 中更新。
+3. 创建以下 Buckets: `mlflow`, `dvc`, `prefect` 。
+4. 创建 Access Keys（建议为每个用户创建独立的 Key，这里演示使用根用户）。
 
 #### B. Gitea (代码仓库)
 
 1. 访问 `http://localhost:3000` 。
 2. 点击 "Register" 进行初始配置。
-	- **数据库类型**: PostgreSQL
-	- **主机**: `db:5432`
-	- **用户名/密码**: 参考 `.env` (默认 `admin` / `secure_pg_password`)
-	- **数据库名称**: `gitea`
-3. 创建第一个管理员账号。
+	- 数据库主机: `mlops-postgres:5432` (注意：使用容器名)
+	- 用户名/密码: 参考 `.env`
+	- 域名/URL: 使用 `localhost` 或您的服务器 IP
+3. 创建管理员账号。
 
-#### C. Prefect (工作流编排)
+#### C. Prefect (编排)
 
-1. Prefect Server 已自动连接 Postgres 启动。
-2. 访问 `http://localhost:4200` 确认 UI 可用。
-3. 在 Workspace 容器内配置 API 地址：
-	```bash
-	prefect config set PREFECT_API_URL=http://prefect-server:4200/api
+1. 访问 `http://localhost:4200` 确认 UI 可用。
+
+#### D. Grafana (监控)
+
+1. 访问 `http://localhost:3001` (默认: `admin` / `admin`)。
+2. **添加数据源**: 选择 Prometheus，URL 输入 `http://mlops-prometheus:9090` 。
+3. **导入仪表盘 (Import)**:
+	- **宿主机监控**: ID `1860`
+	- **容器监控**: ID `14282`
+	- **Postgres**: ID `9628`
+	- **Redis**: ID `763`
+
+### 步骤 4: 启动工作区 (Workspace)
+
+为用户（如 user1）启动独立的开发环境。根据服务器硬件情况选择 GPU 或 CPU 版本。
+
+1. **创建用户配置**: 参考模板创建 `.env.user1` ，设置基本信息和端口（ **注意：PORT\_NAV 为该用户的统一导航入口端口** ）：
+	```ini
+	WORKSPACE_NAME=workspace-user1
+	WORKSPACE_PASSWORD=mysecret
+	WORKSPACE_TOKEN=mytoken
+	# 导航仪表盘端口
+	PORT_NAV=8080
+	# 各服务端口 (确保不冲突)
+	PORT_JUPYTER=8888
+	PORT_VSCODE=8081
+	PORT_BENTO=3002
+	PORT_STREAMLIT=8501
 	```
-
-#### D. 开发环境 (Workspace)
-
-1. **JupyterLab**: 访问 `http://localhost:8888` (Token: `workspace_token`)。
-2. **VSCode**: 访问 `http://localhost:8081` (Password: `workspace_password`)。
-3. 验证 GPU (如果启用): 在 Jupyter 中运行:
-	```python
-	import torch
-	print(torch.cuda.is_available())
-	```
-
-#### E. Grafana (可视化监控)
-
-1. 访问 `http://localhost:3001` (或点击导航页卡片)。
-2. 登录 (默认: `admin` / `admin`)，系统会提示修改密码。
-3. **添加数据源 (Add Data Source)**:
-	- 选择 **Prometheus** 。
-	- 在 URL 栏输入: `http://prometheus:9090` (注意这里使用 Docker 服务名)。
-	- 点击 "Save & Test"。
-4. **导入仪表盘 (Import Dashboard)**:
-	- 在左侧菜单选择 Dashboards -> New -> Import。
-	- 输入以下 Grafana ID 并点击 Load，选择刚才创建的 Prometheus 数据源：
-		- 宿主机硬件监控: ID 1860 (Node Exporter Full)
-		- Docker 容器监控: ID 14282 (Cadvisor Exporter)
-		- PostgreSQL 数据库: ID 9628 (PostgreSQL Database)
-		- Redis 缓存: ID 763 (Redis Dashboard)
-
-#### F. Feast (特征存储)
-
-Feast 需要在 Workspace 容器内进行配置以连接离线存储 (Postgres) 和在线存储 (Redis)。
-
-1. **进入 Workspace 容器**:
-
-```bash
-docker exec -it mlops-workspace bash
-```
+2. **启动容器 (选择其一)**:
+	- **选项 A: 启用 GPU (需要 NVIDIA 显卡)**
+		```bash
+		docker compose -f docker-compose.workspace.gpu.yml --env-file .env.user1 up -d --build
+		```
+	- **选项 B: 仅 CPU (轻量模式)**
+		```bash
+		docker compose -f docker-compose.workspace.cpu.yml --env-file .env.user1 up -d --build
+		```
+3. **访问环境**:
+	- **统一导航仪表盘**: `http://localhost:8080` (或您在 `.env.user1` 中配置的 `PORT_NAV`)
+		- 打开此页面即可看到 JupyterLab, VSCode, Gitea, MLflow 等所有服务的快捷入口。
+	- **直接访问**:
+		- JupyterLab: `http://localhost:8888`
+		- VSCode: `http://localhost:8081`
+		- Streamlit: `http://localhost:8501`
 
 
-2. **初始化项目**:
-```bash
-feast init feature_repo
-cd feature_repo
-```
-
-
-3. **修改配置 (`feature_store.yaml`)**:
-编辑 `feature_store.yaml` 文件，将数据源指向 Docker 容器网络中的服务：
-```yaml
-project: feature_repo
-registry: data/registry.db
-provider: local
-online_store:
-    type: redis
-    # 使用 docker-compose 服务名
-    connection_string: "redis:6379"
-offline_store:
-    type: postgres
-    # 使用 docker-compose 服务名
-    host: db
-    port: 5432
-    database: postgres
-    user: admin
-    password: secure_pg_password
-```
 
 ## 4\. 工作流示例 (Workflow Walkthrough)
 
-以下是在 Workspace 容器内进行开发的典型场景。首先，请进入容器终端：
+以下操作均在 **Workspace 容器内部** 执行。请先进入容器：
 
 ```bash
-docker exec -it mlops-workspace bash
+docker exec -it mlops-workspace-user1 bash
 ```
 
 ### 场景 1: 代码版本管理 (Gitea)
 
-在开始任何项目前，先在 Gitea 上创建一个空仓库，然后在 Workspace 中初始化：
-
 ```bash
-# 1. 初始化项目目录
-mkdir my-project && cd my-project
-git init
+# 1. 配置 Git
+git config --global user.email "user1@mlops.local"
+git config --global user.name "User 1"
 
-# 2. 配置 Git 用户
-git config --global user.name "DataScientist"
-git config --global user.email "ds@mlops.local"
-
-# 3. 创建代码文件
-echo "print('Hello MLOps')" > main.py
-
-# 4. 推送到 Gitea
-git add main.py
-git commit -m "Initial commit"
-git branch -M main
-# 注意：使用 host.docker.internal 或宿主机 IP，端口 3000
-git remote add origin [http://host.docker.internal:3000/your_username/my-project.git](http://host.docker.internal:3000/your_username/my-project.git)
-git push -u origin main
+# 2. 克隆/推送
+# 注意：使用 Infra 的容器名 "mlops-gitea" 进行内部通信
+git clone http://mlops-gitea:3000/your_username/my-project.git
+cd my-project
+echo "print('Hello')" > main.py
+git add . && git commit -m "init"
+git push
 ```
 
-### 场景 2: 代码与数据协同版本管理 (Git + DVC)
-
-大文件（数据集、模型权重）不应存入 Git，而是使用 DVC 存入 MinIO，Git 只管理元数据。
+### 场景 2: 代码与数据协同 (DVC)
 
 ```bash
-# 1. 初始化 DVC
 dvc init
-
-# 2. 配置 DVC 远程存储 (MinIO)
-# 注意：使用 minio 容器服务名，bucket 需提前在 Step 3-A 中创建
+# 配置 MinIO (使用容器名 mlops-minio)
 dvc remote add -d myremote s3://dvc/my-project
-dvc remote modify myremote endpointurl http://minio:9000
+dvc remote modify myremote endpointurl http://mlops-minio:9000
 dvc remote modify myremote access_key_id minioadmin
 dvc remote modify myremote secret_access_key minioadmin
 
-# 3. 追踪数据文件
-# 假设有一个大文件 data/raw.csv
 dvc add data/raw.csv
-
-# 4. 提交更改
-# DVC 会生成 data/raw.csv.dvc 文件，Git 只需要追踪这个小文件
+dvc push
 git add data/raw.csv.dvc .gitignore
-git commit -m "Add raw dataset"
-
-# 5. 推送数据与代码
-dvc push  # 数据上传到 MinIO
-git push  # 代码上传到 Gitea
+git commit -m "Add data" && git push
 ```
 
 ### 场景 3: Prefect 流程编排
 
-使用 Python 定义工作流，并利用 Prefect 监控运行状态。
-
-**创建 `flow.py`:**
+无需额外配置，环境变量 `PREFECT_API_URL` 已自动指向 `http://mlops-prefect:4200/api` 。
 
 ```python
 from prefect import flow, task
-import time
-
-@task(retries=3)
-def load_data():
-    print("Loading data...")
-    time.sleep(1)
-    return [1, 2, 3]
 
 @task
-def process_data(data):
-    print(f"Processing {len(data)} records...")
-    return [x * 10 for x in data]
+def process():
+    return "Done"
 
-@flow(name="Daily Training Flow", log_prints=True)
-def training_pipeline():
-    raw_data = load_data()
-    processed = process_data(raw_data)
-    print(f"Result: {processed}")
+@flow
+def my_flow():
+    process()
 
 if __name__ == "__main__":
-    # 本地运行并上报到 Prefect Server
-    training_pipeline()
+    my_flow() # 运行结果会自动上报到 Prefect Server
 ```
 
-**运行与监控:**
+### 场景 4: 特征工程 (Feast)
 
-1. 在终端运行: `python flow.py`
-2. 打开浏览器 `http://localhost:4200` ，你将在 Dashboard 中看到刚才的运行记录、日志和任务状态。
+配置 Feast 连接到共享的基础设施。
 
-### 场景 4: CI/CD 自动化 (Gitea Actions)
+1. **初始化**:
+	```bash
+	feast init feature_repo && cd feature_repo
+	```
+2. **修改 `feature_store.yaml`**:**关键**: `host` 必须指向 Infra 网络中的容器名。
+	```yaml
+	project: feature_repo
+	registry: data/registry.db
+	provider: local
+	online_store:
+	    type: redis
+	    connection_string: "mlops-redis:6379"  # 使用容器名
+	offline_store:
+	    type: postgres
+	    host: mlops-postgres               # 使用容器名
+	    port: 5432
+	    database: postgres
+	    user: admin
+	    password: secure_pg_password
+	```
+3. **应用与同步**:
+	```bash
+	feast apply
+	feast materialize-incremental $(date -u +"%Y-%m-%dT%H:%M:%S")
+	```
 
-当代码推送到 Gitea 时，自动触发测试。
+### 场景 5: CI/CD 自动化
 
-**1\. 在项目根目录创建工作流文件 `.gitea/workflows/ci.yaml`:**
+在 Gitea 仓库中创建 `.gitea/workflows/ci.yaml` ：
 
 ```yaml
-name: MLOps CI
+name: CI
 on: [push]
-
 jobs:
-  test-model:
+  test:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install pytest pandas scikit-learn
-
-      - name: Run Data Integrity Tests
-        run: |
-          # 假设您有测试脚本 tests/test_data.py
-          # pytest tests/
-          echo "Running tests..."
-          python -c "import pandas; print('Pandas imported successfully')"
-```
-
-**2\. 提交并推送:**
-
-```bash
-git add .gitea/workflows/ci.yaml
-git commit -m "Add CI pipeline"
-git push
-```
-
-**3\. 查看结果:**在 Gitea 仓库页面的 "Actions" 标签页中，您将看到流水线正在运行。如果配置了 Runner（本架构中需确保 Gitea Act Runner 已启用并连接到 Gitea 实例），它将自动执行这些步骤。
-
-### 场景 5: 特征工程与服务 (Feast)
-
-利用 Feast 管理特征并提供低延迟服务。
-
-1. **应用特征定义**:
-在 `feature_repo` 目录下（已在步骤 3-F 中配置好），运行：
-```bash
-# 将特征定义注册到 Registry，并同步到 Online Store (Redis)
-feast apply
-```
-
-2. **物化特征 (Materialize)**:
-将数据从离线存储加载到在线存储（Redis）中，以便实时服务。
-```bash
-# 将当前时间点的数据加载到 Redis
-feast materialize-incremental $(date -u +"%Y-%m-%dT%H:%M:%S")
-```
-
-3. **获取在线特征 (Python)**:
-```python
-from feast import FeatureStore
-import pandas as pd
-
-store = FeatureStore(repo_path=".")
-
-feature_vector = store.get_online_features(
-    features=[
-        "driver_hourly_stats:conv_rate",
-        "driver_hourly_stats:acc_rate",
-    ],
-    entity_rows=[
-        {"driver_id": 1001},
-    ]
-).to_dict()
-
-print(feature_vector)
+          python-version: '3.12'
+      - run: pip install pytest
+      - run: pytest
 ```
 
 ## 5\. 故障排查
 
-- **容器无法启动**: 查看日志 `docker compose logs -f <service_name>` 。
-- **权限错误**: 检查 `data/` 目录的归属权是否为 `1000:1000` 。
-- **GPU 无法识别**: 确保宿主机运行 `nvidia-smi` 正常，且 Docker Compose 中 `runtime: nvidia` 或 `deploy.resources` 配置正确。
-- **Gitea Actions 未运行**: 检查 Gitea 配置文件中是否启用了 Actions 功能 (`[actions] ENABLED = true`)，并确认 Runner 已注册。
+- **Workspace 无法连接 MinIO/Gitea**: 检查是否创建了 `mlops-shared-net` 网络，并确保 `docker-compose.workspace.yml` 中 `external: true` 配置正确。
+- **权限错误**: 容器启动时会自动修复 `/home/jovyan/work` 的权限。如果手动挂载了其他目录，请确保宿主机目录权限为 `1000:1000` 。
+- **GPU 不可用**: 确保宿主机安装了 NVIDIA Container Toolkit，并在启动 Workspace 时正确传递了 GPU 资源配置。

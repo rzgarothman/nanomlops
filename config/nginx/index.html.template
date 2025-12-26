@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MLOps Platform Dashboard</title>
+    <!-- CSS 省略，保持不变 -->
+    <style>
+        /* ... 复用之前的 CSS ... */
+        :root { --bg-color: #0f172a; --card-bg: #1e293b; --text-main: #f1f5f9; --text-sub: #94a3b8; --accent: #3b82f6; --hover: #2563eb; }
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        body { background-color: var(--bg-color); color: var(--text-main); min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 40px 20px; }
+        header { text-align: center; margin-bottom: 50px; }
+        h1 { font-size: 2.5rem; font-weight: 700; margin-bottom: 10px; background: linear-gradient(to right, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        p.subtitle { color: var(--text-sub); font-size: 1.1rem; }
+        .grid-container { display: flex; flex-wrap: wrap; justify-content: center; gap: 24px; width: 100%; max-width: 1200px; }
+        .category { width: 100%; margin-top: 20px; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; }
+        .category h2 { font-size: 1.2rem; color: var(--text-sub); text-transform: uppercase; letter-spacing: 0.05em; }
+        .category .line { flex: 1; height: 1px; background: #334155; }
+        .card { background-color: var(--card-bg); border-radius: 12px; padding: 24px; text-decoration: none; color: inherit; transition: all 0.2s ease; border: 1px solid rgba(255,255,255,0.05); display: flex; flex-direction: column; gap: 12px; position: relative; overflow: hidden; cursor: pointer; flex: 1 1 280px; max-width: 360px; }
+        .card:hover { transform: translateY(-4px); border-color: var(--accent); box-shadow: 0 10px 30px -10px rgba(0,0,0,0.5); }
+        .icon-box { width: 48px; height: 48px; border-radius: 10px; background: rgba(59, 130, 246, 0.1); display: flex; align-items: center; justify-content: center; color: var(--accent); margin-bottom: 4px; }
+        .card-title { font-size: 1.25rem; font-weight: 600; }
+        .card-desc { font-size: 0.9rem; color: var(--text-sub); line-height: 1.5; }
+        .status-dot { position: absolute; top: 20px; right: 20px; width: 8px; height: 8px; border-radius: 50%; background-color: #10b981; box-shadow: 0 0 8px rgba(16, 185, 129, 0.4); }
+        .port-tag { display: inline-block; font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; background: #334155; color: #94a3b8; margin-top: auto; width: fit-content; }
+        svg { width: 24px; height: 24px; }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>MLOps Infrastructure</h1>
+        <p class="subtitle">Unified Platform Services Dashboard</p>
+    </header>
+
+    <div class="grid-container">
+
+        <!-- Zone: Development -->
+        <div class="category"><h2>Development & IDE</h2><div class="line"></div></div>
+        
+        <div onclick="visitPort(${PORT_JUPYTER})" class="card">
+            <div class="status-dot"></div>
+            <div class="icon-box"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" /></svg></div>
+            <div class="card-title">JupyterLab</div>
+            <div class="card-desc">Interactive development environment for notebooks, code, and data.</div>
+            <div class="port-tag">Port ${PORT_JUPYTER}</div>
+        </div>
+
+        <div onclick="visitPort(${PORT_VSCODE})" class="card">
+            <div class="status-dot"></div>
+            <div class="icon-box"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg></div>
+            <div class="card-title">VS Code Server</div>
+            <div class="card-desc">Full-featured VS Code IDE running in the browser.</div>
+            <div class="port-tag">Port ${PORT_VSCODE}</div>
+        </div>
+
+        <div onclick="visitPort(${PORT_STREAMLIT})" class="card">
+            <div class="status-dot"></div>
+            <div class="icon-box"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" /></svg></div>
+            <div class="card-title">Streamlit App</div>
+            <div class="card-desc">Rapid data app development and visualization preview.</div>
+            <div class="port-tag">Port ${PORT_STREAMLIT}</div>
+        </div>
+
+        <div onclick="visitPort(${PORT_GITEA_HTTP})" class="card">
+            <div class="status-dot"></div>
+            <div class="icon-box"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.384-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" /></svg></div>
+            <div class="card-title">Gitea</div>
+            <div class="card-desc">Git repository management, version control, and CI/CD actions.</div>
+            <div class="port-tag">Port ${PORT_GITEA_HTTP}</div>
+        </div>
+
+        <!-- Zone: Operations -->
+        <div class="category"><h2>ML Operations</h2><div class="line"></div></div>
+
+        <div onclick="visitPort(${PORT_MLFLOW})" class="card">
+            <div class="status-dot"></div>
+            <div class="icon-box"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.384-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" /></svg></div>
+            <div class="card-title">MLflow</div>
+            <div class="card-desc">Experiment tracking, model registry, and artifact management.</div>
+            <div class="port-tag">Port ${PORT_MLFLOW}</div>
+        </div>
+
+        <div onclick="visitPort(${PORT_PREFECT})" class="card">
+            <div class="status-dot"></div>
+            <div class="icon-box"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg></div>
+            <div class="card-title">Prefect</div>
+            <div class="card-desc">Workflow orchestration and pipeline management UI.</div>
+            <div class="port-tag">Port ${PORT_PREFECT}</div>
+        </div>
+
+        <div onclick="visitPort(${PORT_LABEL_STUDIO})" class="card">
+            <div class="status-dot"></div>
+            <div class="icon-box"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" /></svg></div>
+            <div class="card-title">Label Studio</div>
+            <div class="card-desc">Data labeling and annotation tool for images, text, and audio.</div>
+            <div class="port-tag">Port ${PORT_LABEL_STUDIO}</div>
+        </div>
+
+        <!-- Zone: Infrastructure -->
+        <div class="category"><h2>Infrastructure & Monitoring</h2><div class="line"></div></div>
+
+        <div onclick="visitPort(${PORT_MINIO_CONSOLE})" class="card">
+            <div class="status-dot"></div>
+            <div class="icon-box"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" /></svg></div>
+            <div class="card-title">MinIO Console</div>
+            <div class="card-desc">High-performance object storage management (S3 compatible).</div>
+            <div class="port-tag">Port ${PORT_MINIO_CONSOLE}</div>
+        </div>
+
+        <div onclick="visitPort(${PORT_GRAFANA})" class="card">
+            <div class="status-dot"></div>
+            <div class="icon-box"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg></div>
+            <div class="card-title">Grafana</div>
+            <div class="card-desc">Operational monitoring dashboards and metrics visualization.</div>
+            <div class="port-tag">Port ${PORT_GRAFANA}</div>
+        </div>
+
+        <div onclick="visitPort(${PORT_EVIDENTLY})" class="card">
+            <div class="status-dot"></div>
+            <div class="icon-box"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg></div>
+            <div class="card-title">Evidently AI</div>
+            <div class="card-desc">Machine learning model monitoring and data drift detection.</div>
+            <div class="port-tag">Port ${PORT_EVIDENTLY}</div>
+        </div>
+
+    </div>
+
+    <script>
+        function visitPort(port) {
+            const protocol = window.location.protocol;
+            const hostname = window.location.hostname;
+            window.location.href = `${protocol}//${hostname}:${port}`;
+        }
+    </script>
+</body>
+</html>
